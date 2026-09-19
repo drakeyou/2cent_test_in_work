@@ -1,0 +1,107 @@
+# Paper-trade simulator для Polymarket. Только чтение, ключей нет.
+# Все пороги наружу; менять можно без пересбора данных там, где это помечено.
+
+disciplines: [dota2, cs2]
+
+entry:
+  price: 0.02
+  size_shares: 1000
+  # ТЗ: "биды суммарно хотя бы на 0.08 (то есть лучший бид >= 0.08)".
+  # Реализовано как ЦЕНА лучшего бида. Нотиональная трактовка проверяется
+  # офлайн по полям bid_notional_above_002 / bid_shares_above_002.
+  min_best_bid: 0.08
+  min_bid_above: null          # алиас min_best_bid для совместимости с ТЗ
+  # Снимать ли виртуальную заявку, если предусловие перестало выполняться.
+  # Реальный пассивный мейкер не успевает -> false. См. precondition_held_at_fill.
+  cancel_when_precondition_breaks: false
+  cooldown_s: 300              # после полного филла, до новой постановки
+  max_events_per_asset_per_hour: 12
+  # Подавленные кулдауном возможности всё равно пишутся (suppressed_by_cooldown),
+  # чтобы частоту можно было пересчитать при любом кулдауне.
+  log_suppressed: true
+
+exit:
+  policy: undercut             # undercut | static_multiple | none
+  tick: 0.001
+  follow_up: false             # следовать за аском вверх (ТЗ: нет)
+  follow_down_floor: 0.001     # ниже этой цены аск не переставляем
+  max_quote_moves: 200
+  min_clip_shares: 5           # остаток меньше -> не считается продаваемым
+  max_participation: 1.0       # доля встречной сделки, которую можем забрать
+  simulate_until: resolution   # resolution | window_end
+  static_multiple: 4.0         # для альтернативной политики в анализаторе
+
+window:
+  dense_before_s: 30
+  dense_after_s: 120
+  snapshot_interval_s: 2       # сетка -30..+120 => 76 узлов, не 75
+  checkpoints_min: [5, 10, 20, 40, 60]
+  ring_buffer_s: 60
+
+classify:
+  window_ms: 1500              # окно корреляции сделка <-> сокращение книги
+  credit_ttl_ms: 3000
+  sweep_inference: true        # атрибуция непрерывной полосы сокращений свипу
+  side_calibration_trades: 200 # самокалибровка стороны last_trade_price
+  log_book_vanished: true      # только когда у нас лежала заявка
+
+market_discovery:
+  poll_s: 45
+  gamma_url: "https://gamma-api.polymarket.com/markets"
+  limit: 500
+  subscribe_before_game_s: 600      # gameStartTime - 10 мин
+  release_after_end_s: 1800         # endDate + 30 мин (нижняя граница удержания)
+  max_subscription_hours: 12        # потолок против зависших рынков
+  subscribe_when_start_unknown: true
+
+ws:
+  url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+  max_assets_per_conn: 100
+  max_total_assets: 1200
+  # При переполнении: СЛУЧАЙНАЯ выборка, не отбор по ликвидности.
+  # Отбор по ликвидности выкинул бы именно тонкие подрынки, где живёт эффект.
+  overflow_policy: random_sample
+  ping_interval_s: 10
+  backoff_initial_s: 1.0
+  backoff_max_s: 60.0
+  resubscribe_debounce_s: 5
+
+integrity:
+  rest_book_url: "https://clob.polymarket.com/book"
+  check_interval_s: 300
+  max_checks_per_minute: 20
+  enabled: true
+
+resolution:
+  url: "https://clob.polymarket.com/markets"
+  poll_s: 3600
+
+reconcile:
+  trades_url: "https://data-api.polymarket.com/trades"
+  poll_s: 60
+  delayed_pass_s: 300
+  match_tolerance_s: 3
+
+target_wallet:
+  activity_url: "https://data-api.polymarket.com/activity"
+  poll_s: 300
+  addresses:
+    - "0xe0f6ee3a23385afdf446c324f9fb69364a272ee6"
+    - "0xd403596d8690210994e7f4bae6b9dac1b7e4a817"
+    - "0x8840126a43353f6cdcd77e90bf2327474a4ef51a"
+    - "0xdaffa580bde56e654dc9e0c22b6464993aba5cb1"
+
+storage:
+  backend: sqlite              # sqlite | csv
+  db_path: "state/paper.db"
+  csv_dir: "data"
+  commit_interval_s: 1.0
+  keep_raw_frames_days: 3
+  raw_frames_dir: "captures"
+  raw_frames_for_events_only: true
+
+http:
+  timeout_s: 20.0
+  max_retries: 4
+
+log_level: INFO
