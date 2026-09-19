@@ -77,10 +77,6 @@ class Engine:
         self.assets: dict[str, AssetState] = {}
         self.events: dict[str, EventCtx] = {}
         self.calibrator = SideCalibrator(cfg.classify.side_calibration_trades)
-        saved = store.get_kv("side_calibration")
-        if saved:
-            self.calibrator.load(saved)
-            log.info("калибровка стороны восстановлена: %s", saved)
         self.grid = cfg.window.grid
         self.n_trades_seen = 0
         self.n_events = 0
@@ -90,6 +86,14 @@ class Engine:
         # Заполняется менеджером WS: нужно, чтобы отнести разрыв шарда к тем
         # дисциплинам, которые он реально ослепил, а не ко всем сразу.
         self.shard_of: dict[str, int] = {}
+
+    def load_state(self) -> None:
+        """Чтение сохранённого состояния. Отдельный шаг, а не конструктор:
+        хранилище к моменту создания движка ещё не открыто."""
+        saved = self.store.get_kv("side_calibration")
+        if saved:
+            self.calibrator.load(saved)
+            log.info("калибровка стороны восстановлена: %s", saved)
 
     # ------------------------------------------------------------- подписка
 
@@ -229,6 +233,9 @@ class Engine:
         fair_lower = (1.0 - paired_ask) if paired_ask is not None else None
         fair_upper = (1.0 - paired_bid) if paired_bid is not None else None
 
+        snap_version = st.ring.nearest(
+            ev.ts_ms, self.cfg.window.snapshot_interval_s * 1000
+        )
         m = st.market
         mins = (
             (ev.ts_ms - m.game_start_ms) / 60000.0 if m.game_start_ms is not None else None
@@ -262,6 +269,7 @@ class Engine:
             "queue_ahead_at_placement": ev.queue_ahead_at_placement,
             "queue_ahead_est": ev.queue_ahead_est,
             "prior_size_staleness_ms": ev.prior_size_staleness_ms,
+            "prior_size_at_002_snapshot": snap_version.size_at_002 if snap_version else None,
             "precondition_held_at_fill": int(ev.precondition_held_at_fill),
             # делим на нашу цену входа: платим мы 0.02, а не bid_after
             "dislocation_vs_entry": safe_div(fair_lower, ev.our_entry_price),
@@ -288,6 +296,11 @@ class Engine:
                 sweep_window_ms=self.cfg.classify.window_ms,
             )
         self.events[ev.event_id] = ctx
+        # Строка позиции пишется СРАЗУ, а не при первом филле на выходе.
+        # По историческим данным 74% позиций на дне сгорают в ноль и выхода не
+        # видят вовсе — иначе у трёх четвертей записей не было бы даже цены и
+        # размера входа, а при падении процесса они терялись бы совсем.
+        self._write_position(ctx)
         self._drain_ring(st, ctx)
 
         self.n_events += 1
@@ -310,6 +323,7 @@ class Engine:
         ctx.n_entry_fills += 1
         if ctx.exit is not None:
             ctx.exit.position_size = ev.our_fill_cum
+        self._write_position(ctx)
         self.store.update("paper_events", {"event_id": ev.event_id}, {
             "our_fill": ev.our_fill_cum, "our_fill_cum": ev.our_fill_cum,
             "level_traded_size": ev.level_traded_size, "n_partial": ev.n_partial,

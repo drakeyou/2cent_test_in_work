@@ -127,11 +127,28 @@ class ClassifyCfg:
 class DiscoveryCfg:
     poll_s: int = 45
     gamma_url: str = "https://gamma-api.polymarket.com/markets"
-    limit: int = 500
+    tags_url: str = "https://gamma-api.polymarket.com/tags/slug"
+    # Gamma игнорирует limit выше 100; держим реальное значение, иначе
+    # пагинация «страница меньше limit — значит последняя» остановится сразу.
+    limit: int = 100
+    max_pages: int = 40
+    tag_slugs: list[str] = field(default_factory=lambda: ["dota", "cs2", "counter-strike"])
+    tag_sport_map: dict = field(default_factory=lambda: {
+        "dota": "dota2", "cs2": "cs2", "counter-strike": "cs2"})
+    scan_all_markets: bool = False
+    max_horizon_days: float = 7.0
     subscribe_before_game_s: int = 600
     release_after_end_s: int = 1800
     max_subscription_hours: int = 12
     subscribe_when_start_unknown: bool = True
+
+    def __post_init__(self) -> None:
+        if self.limit > 100:
+            raise ConfigError(
+                "market_discovery.limit > 100 бессмысленно: Gamma отдаёт не более "
+                "100 записей за запрос, а пагинация по признаку «страница короче "
+                "limit» остановится на первой же странице"
+            )
 
 
 @dataclass

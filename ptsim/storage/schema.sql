@@ -88,6 +88,10 @@ CREATE TABLE IF NOT EXISTS paper_events (
   queue_ahead_est          REAL,
   -- насколько книга «непосредственно до» действительно непосредственно до
   prior_size_staleness_ms  INTEGER,
+  -- Что дал бы подход ТЗ: prior_size из снапшота с шагом 2 с вместо точного
+  -- пособытийного состояния. Пишется рядом, чтобы расхождение двух подходов
+  -- было ИЗМЕРЕНО на собранных данных, а не осталось моим утверждением.
+  prior_size_at_002_snapshot REAL,
   precondition_held_at_fill INTEGER,
   -- делим на нашу цену входа, а не на bid_after: платим мы 0.02
   dislocation_vs_entry     REAL,

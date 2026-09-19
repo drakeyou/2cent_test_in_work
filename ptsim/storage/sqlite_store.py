@@ -163,9 +163,22 @@ class SqliteStore:
 
     # --------------------------------------------------------------- чтение
 
-    def query(self, sql: str, params: Iterable = ()) -> list[sqlite3.Row]:
+    def execute_raw(self, sql: str, params: Iterable = ()) -> int:
+        """Прямой UPDATE по множеству строк (массовый бэкфилл).
+
+        Сбрасывает буфер перед выполнением, чтобы не обогнать отложенные
+        вставки: иначе бэкфилл прошёл бы мимо строк, которые ещё в очереди.
+        """
+        if self._conn is None:
+            raise RuntimeError("SqliteStore: обращение к базе до open()/start()")
         self.flush()
-        assert self._conn is not None
+        cur = self._conn.execute(sql, tuple(params))
+        return cur.rowcount
+
+    def query(self, sql: str, params: Iterable = ()) -> list[sqlite3.Row]:
+        if self._conn is None:
+            raise RuntimeError("SqliteStore: обращение к базе до open()/start()")
+        self.flush()
         return list(self._conn.execute(sql, tuple(params)))
 
     def query_one(self, sql: str, params: Iterable = ()) -> sqlite3.Row | None:

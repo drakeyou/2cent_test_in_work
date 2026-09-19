@@ -187,3 +187,57 @@ def test_resolution_closes_the_position_at_payout(rig):
     # Не продали ничего, токен выиграл: 1000 долей по $1 против затрат $20.
     assert pos["pnl"] == pytest.approx(980.0)
     assert pos["multiple"] == pytest.approx(50.0)
+
+
+def test_position_row_exists_before_any_exit(rig):
+    """74% позиций сгорают в ноль и выхода не видят.
+
+    Если строка позиции появляется только при первом филле на выходе, у трёх
+    четвертей записей не будет даже цены и размера входа.
+    """
+    cfg, store, eng = rig
+    eng.on_ws_message(book_msg(A, [("0.10", "500")], [("0.15", "300")], T0 - 10_000))
+    eng.on_ws_message(book_msg(B, [("0.80", "1000")], [("0.90", "500")], T0 - 10_000))
+    eng.tick(T0 - 10_000)
+    eng.on_ws_message(trade(A, "0.02", "5000", "SELL", T0))
+
+    pos = store.query_one("SELECT * FROM paper_positions")
+    assert pos is not None, "строка позиции должна быть сразу после входа"
+    assert pos["entry_price"] == pytest.approx(0.02)
+    assert pos["entry_size"] == pytest.approx(1000)
+    assert pos["exit_size"] == pytest.approx(0)
+    assert pos["closed_by"] is None, "ещё не закрыта"
+    assert pos["pnl"] is None, "без выхода и резолюции PnL неизвестен, а не ноль"
+
+
+def test_crossed_book_joins_the_ask_rather_than_crossing(rig):
+    """Пересечённая книга: подрезать нельзя, иначе продаём по биду."""
+    cfg, store, eng = rig
+    eng.on_ws_message(book_msg(A, [("0.10", "500")], [("0.15", "300")], T0 - 10_000))
+    eng.on_ws_message(book_msg(B, [("0.80", "1000")], [("0.90", "500")], T0 - 10_000))
+    eng.tick(T0 - 10_000)
+    eng.on_ws_message(trade(A, "0.02", "5000", "SELL", T0))
+    eng.on_ws_message(change(A, [("0.10", "SELL", "400")], T0 + 1_000))
+    eng.tick(T0 + 2_000)
+
+    ctx = list(eng.events.values())[0]
+    assert ctx.exit.our_ask_tick == 100, "встаём В аск 0.10, а не под него"
+
+
+def test_engine_constructs_before_the_store_is_open():
+    """Регрессия: движок читал калибровку в конструкторе, до open() базы,
+    и коллектор падал на старте, не дойдя до первого сообщения."""
+    import tempfile
+
+    from ptsim.storage import SqliteStore
+
+    store = SqliteStore(tempfile.mktemp(suffix=".db"), 999)
+    cfg = load("config.yaml")
+    reg = MarketRegistry(cfg, store)
+    eng = Engine(cfg, store, reg)  # не должно бросать
+    with pytest.raises(RuntimeError, match="до open"):
+        store.query("SELECT 1")
+    store.open()
+    eng.load_state()
+    assert eng.calibrator.pending is True
+    store._conn.close()

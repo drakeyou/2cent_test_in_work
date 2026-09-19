@@ -1,0 +1,22 @@
+[Unit]
+Description=Polymarket paper-trade collector (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/paper-trade
+ExecStart=/opt/paper-trade/.venv/bin/python run_collector.py --config config.yaml
+Restart=always
+RestartSec=5
+# Рестарт логируется самим процессом как разрыв наблюдения: простой,
+# не попавший в gaps, завысил бы частоту события.
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/paper-trade/state /opt/paper-trade/data /opt/paper-trade/captures
+
+[Install]
+WantedBy=multi-user.target

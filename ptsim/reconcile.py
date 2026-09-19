@@ -133,4 +133,35 @@ class Reconciler:
         for row in rows:
             await self.reconcile_event(dict(row))
             n += 1
+        n += await self.sweep_missed()
         return n
+
+    async def sweep_missed(self, limit: int = 5, window_min: int = 30) -> int:
+        """Поиск входов, которые классификатор ПРОПУСТИЛ.
+
+        Без этого прохода матрица ошибок односторонняя: мы бы видели только
+        фантомы (WS показал сделку, цепь нет) и не видели бы обратного — что
+        сделка на дне была, а мы её не заметили. Оценивать качество по одной
+        половине матрицы бессмысленно.
+
+        Выборка рынков случайная и малая: эндпоинт ленты не рассчитан на
+        сплошной опрос, а для оценки доли пропусков хватает выборки.
+        """
+        until = now_ms()
+        since = until - window_min * 60_000
+        rows = self.store.query(
+            "SELECT condition_id, asset_id_a, asset_id_b FROM markets "
+            "WHERE subscribed_at IS NOT NULL AND resolved = 0 "
+            "AND condition_id NOT IN "
+            "  (SELECT DISTINCT condition_id FROM paper_events WHERE ts_ms >= ?) "
+            "ORDER BY RANDOM() LIMIT ?", (since, limit),
+        )
+        total = 0
+        for row in rows:
+            for aid in (row["asset_id_a"], row["asset_id_b"]):
+                if aid:
+                    total += await self.check_missed(
+                        row["condition_id"], aid, since, until)
+        if total:
+            log.warning("пропущенных входов за %d мин: %d", window_min, total)
+        return total

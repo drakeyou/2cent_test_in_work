@@ -17,7 +17,7 @@ import signal
 
 from ptsim import config as cfgmod
 from ptsim import logging_setup
-from ptsim.discovery import MarketRegistry
+from ptsim.discovery import GammaFetcher, MarketRegistry
 from ptsim.engine import Engine
 from ptsim.http import Http
 from ptsim.integrity import IntegrityChecker
@@ -37,6 +37,7 @@ class Collector:
         self.store = SqliteStore(cfg.storage.db_path, cfg.storage.commit_interval_s)
         self.http = Http(cfg.http.timeout_s, cfg.http.max_retries)
         self.registry = MarketRegistry(cfg, self.store)
+        self.gamma = GammaFetcher(cfg, self.http)
         self.engine = Engine(cfg, self.store, self.registry)
         self.ws = WsManager(cfg, self.engine.on_ws_message, self._on_gap)
         self.resolution = ResolutionFetcher(cfg, self.store, self.http,
@@ -73,21 +74,13 @@ class Collector:
     async def _discovery_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                raws: list[dict] = []
-                offset = 0
-                for _ in range(10):
-                    page = await self.http.get_json(self.cfg.market_discovery.gamma_url, {
-                        "active": "true", "closed": "false",
-                        "limit": self.cfg.market_discovery.limit, "offset": offset,
-                    })
-                    if not isinstance(page, list) or not page:
-                        break
-                    raws.extend(page)
-                    if len(page) < self.cfg.market_discovery.limit:
-                        break
-                    offset += len(page)
-                if raws:
-                    added = self.registry.ingest(raws)
+                batches = await self.gamma.fetch()
+                seen = sum(len(rows) for rows, _ in batches)
+                self.registry.skipped_horizon = 0
+                if batches:
+                    added = 0
+                    for rows, hint in batches:
+                        added += self.registry.ingest(rows, sport_hint=hint)
                     desired = self.registry.desired_assets()
                     self.engine.sync_assets(desired)
                     await self.ws.set_assets(set(desired))
@@ -95,9 +88,11 @@ class Collector:
                     log.info(
                         "обнаружение: %d рынков в ответе, +%d новых, подписка на %d "
                         "ассетов (%d рынков)%s",
-                        len(raws), added, len(desired), len(desired) // 2,
-                        f", отброшено {self.registry.dropped_this_poll}"
-                        if self.registry.dropped_this_poll else "",
+                        seen, added, len(desired), len(desired) // 2,
+                        (f", отброшено потолком {self.registry.dropped_this_poll}"
+                         if self.registry.dropped_this_poll else "")
+                        + (f", вне горизонта {self.registry.skipped_horizon}"
+                           if self.registry.skipped_horizon else ""),
                     )
             except Exception:
                 log.exception("цикл обнаружения упал")
@@ -146,6 +141,7 @@ class Collector:
     async def run(self) -> None:
         await self.store.start()
         await self.http.start()
+        self.engine.load_state()
         self.registry.load_from_db()
         self._note_restart_gap()
 

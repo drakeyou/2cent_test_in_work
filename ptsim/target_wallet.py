@@ -66,9 +66,7 @@ class TargetWalletTracker:
     def _backfill_flags(self) -> None:
         """Поздняя простановка флага: объект мог зайти в рынок ПОСЛЕ нашего
         события. Ещё один случай, который CSV не умеет."""
-        self.store.query("SELECT 1")  # форсируем сброс буфера перед UPDATE
-        assert self.store._conn is not None
-        self.store._conn.execute(
+        self.store.execute_raw(
             "UPDATE paper_events SET target_wallet_traded_here = 1 "
             "WHERE target_wallet_traded_here = 0 AND condition_id IN "
             "(SELECT DISTINCT condition_id FROM target_activity)"

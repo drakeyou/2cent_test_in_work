@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import re
 
-_DOTA = re.compile(r"\b(dota\s*2|dota2|dota|the-international|ti\d{1,2})\b", re.I)
+# "the-international" и "ti12" убраны намеренно: первое ловит
+# "International Court of Justice" (проверено на живом ответе Gamma), второе
+# слишком коротко и ловит случайные последовательности. Турнирные названия
+# надёжнее приходят тегом, а не разбором слага.
+_DOTA = re.compile(r"\b(dota\s*2|dota2|dota)\b", re.I)
 _CS2 = re.compile(r"\b(cs2|cs-2|csgo|cs-go|counter[\s-]?strike)\b", re.I)
 
 _SEGMENT = re.compile(r"\b(?:map|game|match)[\s\-_]*(\d{1,2})\b", re.I)
@@ -83,8 +87,14 @@ def detect_level(kind: str, segment_no: int | None, *texts: str | None) -> str:
     return "prop"
 
 
-def classify(slug: str | None, question: str | None) -> dict:
-    sport = detect_sport(slug, question)
+def classify(slug: str | None, question: str | None,
+             sport_hint: str | None = None) -> dict:
+    """sport_hint приходит из тега Gamma и ИМЕЕТ ПРИОРИТЕТ над разбором слага.
+
+    Тег проставлен площадкой, регулярка — наша догадка. Когда они расходятся,
+    прав тег.
+    """
+    sport = sport_hint or detect_sport(slug, question)
     kind = detect_kind(slug, question)
     segment_no = detect_segment(slug, question)
     level = detect_level(kind, segment_no, slug, question)

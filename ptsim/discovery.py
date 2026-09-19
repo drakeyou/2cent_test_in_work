@@ -113,14 +113,15 @@ def parse_token_ids(raw: Any) -> tuple[str, str] | None:
     return None
 
 
-def parse_market(raw: dict, disciplines: Iterable[str], ts_ms: int) -> MarketRec | None:
+def parse_market(raw: dict, disciplines: Iterable[str], ts_ms: int,
+                 sport_hint: str | None = None) -> MarketRec | None:
     cid = raw.get("conditionId") or raw.get("condition_id")
     tokens = parse_token_ids(raw.get("clobTokenIds") or raw.get("clob_token_ids"))
     if not cid or not tokens:
         return None
     slug = raw.get("slug") or ""
     question = raw.get("question") or ""
-    c = classify(slug, question)
+    c = classify(slug, question, sport_hint)
     if c["sport"] not in set(disciplines):
         return None
 
@@ -180,6 +181,7 @@ class MarketRegistry:
         self.seed = seed or f"{random.getrandbits(48):x}"
         self.dropped_this_poll: int = 0
         self.sampling_rate: float = 1.0
+        self.skipped_horizon: int = 0
 
     def load_from_db(self) -> None:
         for row in self.store.query("SELECT * FROM markets WHERE resolved = 0"):
@@ -211,12 +213,16 @@ class MarketRegistry:
         if self.markets:
             log.info("реестр восстановлен из базы: %d рынков", len(self.markets))
 
-    def ingest(self, raws: list[dict], ts_ms: int | None = None) -> int:
+    def ingest(self, raws: list[dict], ts_ms: int | None = None,
+               sport_hint: str | None = None) -> int:
         ts = ts_ms or now_ms()
         added = 0
         for raw in raws:
-            rec = parse_market(raw, self.cfg.disciplines, ts)
+            rec = parse_market(raw, self.cfg.disciplines, ts, sport_hint)
             if rec is None:
+                continue
+            if not self._within_horizon(rec, ts):
+                self.skipped_horizon += 1
                 continue
             old = self.markets.get(rec.condition_id)
             if old is None:
@@ -233,6 +239,22 @@ class MarketRegistry:
         for rec in self.markets.values():
             self.store.upsert("markets", rec.to_row(), ["condition_id"])
         return added
+
+    def _within_horizon(self, rec: MarketRec, now: int) -> bool:
+        """Живой матчевый подрынок закрывается за часы, а не за месяцы.
+
+        Долгосрочные пропы («выиграет ли FaZe турнир первого эшелона в 2026»)
+        проходят по тегу дисциплины, но в изучаемую популяцию не входят: на них
+        нет обвала книги в момент матча. Без этого отсечения они вытесняют
+        матчевые рынки из-под потолка подписки — на живой проверке 420 рынков
+        были отброшены ради пропов.
+        """
+        horizon = self.cfg.market_discovery.max_horizon_days * 86_400_000
+        if rec.game_start_source == "gamma":
+            return True  # площадка явно говорит, что это матч
+        if rec.end_date_ms is None:
+            return True  # нет данных — не выбрасываем, пусть решает потолок
+        return (rec.end_date_ms - now) <= horizon
 
     def wants_subscription(self, rec: MarketRec, now: int) -> bool:
         if rec.resolved:
@@ -320,3 +342,68 @@ class MarketRegistry:
             {"resolved": 1, "release_reason": reason,
              "released_at": ms_to_iso(rec.released_at_ms)},
         )
+
+
+class GammaFetcher:
+    """Загрузка рынков из Gamma.
+
+    Проверено на живом API, и это расходится с исходным ТЗ:
+
+      * `limit=500` игнорируется — отдаётся максимум 100 записей за запрос;
+      * `offset` глубже ~2100 возвращает 422, то есть сплошной перебор
+        активных рынков ОГРАНИЧЕН СВЕРХУ и не является полным;
+      * при сплошном переборе 2100 активных рынков киберспортивных матчевых
+        подрынков не нашлось ни одного.
+
+    Поэтому основной источник — теги площадки (dota, cs2, counter-strike), а
+    общий список остаётся подстраховкой на случай нетегированных рынков.
+    Пагинация останавливается на ПУСТОЙ странице, а не на «страница короче
+    limit»: при потолке в 100 второе означало бы остановку на первой странице.
+    """
+
+    def __init__(self, cfg, http) -> None:
+        self.cfg = cfg
+        self.http = http
+        self.tag_ids: dict[str, int] = {}
+
+    async def resolve_tags(self) -> dict[str, int]:
+        if self.tag_ids:
+            return self.tag_ids
+        for slug in self.cfg.market_discovery.tag_slugs:
+            data = await self.http.get_json(
+                f"{self.cfg.market_discovery.tags_url.rstrip('/')}/{slug}")
+            if isinstance(data, dict) and data.get("id"):
+                self.tag_ids[slug] = int(data["id"])
+        log.info("теги Gamma: %s", self.tag_ids or "не разрешены")
+        return self.tag_ids
+
+    async def fetch_all(self, params: dict) -> list[dict]:
+        out: list[dict] = []
+        limit = self.cfg.market_discovery.limit
+        for page_no in range(self.cfg.market_discovery.max_pages):
+            page = await self.http.get_json(
+                self.cfg.market_discovery.gamma_url,
+                {**params, "limit": limit, "offset": page_no * limit},
+            )
+            if not isinstance(page, list) or not page:
+                break
+            out.extend(page)
+        return out
+
+    async def fetch(self) -> list[tuple[list[dict], str | None]]:
+        """Возвращает пары (рынки, подсказка дисциплины из тега)."""
+        await self.resolve_tags()
+        batches: list[tuple[list[dict], str | None]] = []
+        smap = self.cfg.market_discovery.tag_sport_map
+        for slug, tag_id in self.tag_ids.items():
+            rows = await self.fetch_all({
+                "tag_id": tag_id, "related_tags": "true",
+                "active": "true", "closed": "false",
+            })
+            if rows:
+                batches.append((rows, smap.get(slug)))
+        if self.cfg.market_discovery.scan_all_markets:
+            rows = await self.fetch_all({"active": "true", "closed": "false"})
+            if rows:
+                batches.append((rows, None))
+        return batches
