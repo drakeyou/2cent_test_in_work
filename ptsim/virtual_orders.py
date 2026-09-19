@@ -199,10 +199,13 @@ class AssetOrderManager:
         """
         if trade.side_hit != "BID" or trade.tick > self.entry_tick:
             return []
+        # Теневая заявка интересна ТОЛЬКО там, где первичной нет. Когда есть
+        # обе, они идентичны, и писать обе значит удвоить числитель частоты.
+        had_primary = self.order is not None
         out: list[FillEvent] = []
         for shadow in (False, True):
             ev = self._apply_trade(trade, shadow=shadow)
-            if ev is not None:
+            if ev is not None and not (shadow and had_primary):
                 out.append(ev)
         return out
 
