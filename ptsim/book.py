@@ -56,9 +56,18 @@ class LevelDelta:
         return max(0.0, self.old_size - self.new_size)
 
 
+TOP_LEVELS = 12  # сколько уровней каждой стороны хранить в истории
+
+
 @dataclass(slots=True)
 class BookSnapshot:
-    """Ровно те поля, которые идут в paper-book.csv, плюс служебные."""
+    """Ровно те поля, которые идут в paper-book.csv, плюс служебные.
+
+    `bid_sizes` / `ask_sizes` — верх стакана на момент снапшота. Нужны, чтобы
+    взять размер очереди на нашем уровне СТРОГО ДО сделки, а не из книги,
+    которую эта же сделка уже успела уменьшить. Та же ловушка, что с
+    prior_size_at_002 на входе, только на выходе её легче не заметить.
+    """
 
     ts_ms: int
     best_bid: float | None
@@ -73,6 +82,11 @@ class BookSnapshot:
     bid_notional_above_002: float
     bid_shares_above_002: float
     last_real_change_ms: int
+    bid_sizes: dict[int, float] = field(default_factory=dict)
+    ask_sizes: dict[int, float] = field(default_factory=dict)
+
+    def size_at(self, side: Side, tick: int) -> float:
+        return (self.bid_sizes if side == "BID" else self.ask_sizes).get(tick, 0.0)
 
 
 class Book:
@@ -86,6 +100,7 @@ class Book:
         "last_real_change_ms",
         "last_snapshot_ms",
         "_batch_id",
+        "history",
         "ready",
         "updates_applied",
         "snapshots_applied",
@@ -99,6 +114,12 @@ class Book:
         self.last_real_change_ms: int = 0
         self.last_snapshot_ms: int = 0
         self._batch_id: int = 0
+        # Короткая история состояний. Нужна ровно для одного: взять книгу
+        # СТРОГО ДО таймстемпа сделки. ТЗ предлагает брать её из снапшота с
+        # шагом 2 с, но 2 секунды устаревания приходятся на самый турбулентный
+        # момент события и напрямую портят prior_size_at_002, то есть множитель
+        # в модели очереди.
+        self.history: deque[BookSnapshot] = deque(maxlen=16)
         self.ready: bool = False
         self.updates_applied: int = 0
         self.snapshots_applied: int = 0
@@ -135,6 +156,7 @@ class Book:
         self.last_snapshot_ms = ts_ms
         self.snapshots_applied += 1
         self.ready = True
+        self.history.append(self.snapshot(ts_ms))
         return changed
 
     def apply_price_change(
@@ -173,6 +195,7 @@ class Book:
             self.last_real_change_ms = ts_ms
             self.updates_applied += 1
             self.ready = True
+            self.history.append(self.snapshot(ts_ms))
         return deltas
 
     # ---------------------------------------------------------------- чтение
@@ -239,7 +262,24 @@ class Book:
             bid_notional_above_002=notional,
             bid_shares_above_002=shares,
             last_real_change_ms=self.last_real_change_ms,
+            bid_sizes=dict(sorted(self.bids.items(), reverse=True)[:TOP_LEVELS]),
+            ask_sizes=dict(sorted(self.asks.items())[:TOP_LEVELS]),
         )
+
+    def state_at(self, ts_ms: int) -> BookSnapshot | None:
+        """Состояние книги на момент ts_ms (последнее обновление НЕ ПОЗЖЕ него).
+
+        Если книга не менялась с момента раньше ts_ms — актуально текущее
+        состояние. Иначе берём историческую запись. Возвращает None, только
+        если вся история новее запрошенного момента.
+        """
+        if self.last_update_ms <= ts_ms:
+            return self.snapshot(self.last_update_ms)
+        best: BookSnapshot | None = None
+        for s in self.history:
+            if s.ts_ms <= ts_ms and (best is None or s.ts_ms > best.ts_ms):
+                best = s
+        return best
 
     def clear(self) -> None:
         self.bids.clear()
