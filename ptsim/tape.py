@@ -43,6 +43,10 @@ class Trade:
     side_hit: Side
     reported_side: str
     source: str = "ws"
+    # Есть в реальном last_trade_price. Позволяет сверять с ончейн-лентой ПО
+    # ХЭШУ, а не по таймстемпу с допуском: матрица ошибок классификатора
+    # становится точной, а не приблизительной.
+    tx_hash: str = ""
 
 
 @dataclass(slots=True)

@@ -112,3 +112,54 @@ def test_real_book_snapshot_parses(rig):
     assert book.best_bid() is not None and book.best_ask() is not None
     assert book.best_bid() < book.best_ask(), "книга не должна быть пересечена"
     assert book.size_at("BID", 1) > 0, "уровень 0.001 разобран"
+
+
+def test_real_trade_message_shape():
+    """`last_trade_price`, снятый с живого сокета.
+
+    В отличие от price_change, здесь asset_id ЕСТЬ на верхнем уровне. Плюс
+    приходит transaction_hash — он и делает сверку с ончейн-лентой точной, а не
+    приблизительной по таймстемпу.
+    """
+    trades = [m for m in frames() if m.get("event_type") == "last_trade_price"]
+    assert trades, "фикстура должна содержать сделки"
+    for t in trades:
+        assert t.get("asset_id"), "asset_id на верхнем уровне"
+        assert {"price", "size", "side", "timestamp"} <= set(t)
+        assert t.get("transaction_hash", "").startswith("0x")
+
+    # Две сделки подряд по одной цене с разными хэшами: канал шлёт сообщение
+    # на КАЖДЫЙ филл, а не только при изменении цены. Это снимает главную
+    # неопределённость классификатора — кредиты сделок не теряются.
+    same_price = [t for t in trades if t["price"] == "0.002"]
+    if len(same_price) >= 2:
+        assert len({t["transaction_hash"] for t in same_price}) == len(same_price)
+
+
+def test_real_trades_route_and_keep_the_tx_hash(rig):
+    eng, store = rig
+    trades = [m for m in frames() if m.get("event_type") == "last_trade_price"]
+    for m in frames():
+        eng.on_ws_message(m)
+    assert eng.dropped_no_asset == 0
+    assert eng.n_trades_seen == len(trades), "все сделки должны быть разобраны"
+
+
+def test_a_real_shaped_trade_at_the_bottom_triggers_entry(rig):
+    """Реальная форма сообщения о сделке, но на нашем уровне и на продажу."""
+    eng, store = rig
+    bk = [m for m in frames() if m.get("event_type") == "book"][0]
+    aid = str(bk["asset_id"])
+    eng.on_ws_message({**bk, "bids": [{"price": "0.10", "size": "500"}],
+                       "asks": [{"price": "0.20", "size": "300"}]})
+    eng.tick(T0)
+    eng.on_ws_message({
+        "market": bk["market"], "asset_id": aid, "price": "0.02", "size": "5000",
+        "fee_rate_bps": "0", "side": "SELL", "timestamp": str(T0 + 1_000),
+        "event_type": "last_trade_price",
+        "transaction_hash": "0xabc123",
+    })
+    ev = store.query_one("SELECT * FROM paper_events")
+    assert ev is not None and ev["trigger"] == "trade_at_level"
+    tr = store.query_one("SELECT * FROM paper_trades WHERE event_id = ?", (ev["event_id"],))
+    assert tr["tx_hash"] == "0xabc123", "хэш нужен для точной сверки с лентой"

@@ -238,6 +238,7 @@ class Engine:
         trade = Trade(
             tick=tick, size=size, ts_ms=ts,
             side_hit=self.calibrator.side_hit(reported), reported_side=reported,
+            tx_hash=str(msg.get("transaction_hash") or msg.get("transactionHash") or ""),
         )
         self.n_trades_seen += 1
         for c in st.tape.on_trade(trade):
@@ -442,6 +443,7 @@ class Engine:
                 "seconds_from_fill": round((trade.ts_ms - ctx.fill_ms) / 1000.0, 3),
                 "asset_id": st.asset_id, "price": to_price(trade.tick),
                 "size": trade.size, "side_hit": trade.side_hit, "source": trade.source,
+                "tx_hash": trade.tx_hash,
             })
 
     def _target_seen(self, condition_id: str) -> int:

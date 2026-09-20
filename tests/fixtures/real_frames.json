@@ -76,5 +76,38 @@
   ],
   "timestamp": "1789895532824",
   "event_type": "price_change"
+ },
+ {
+  "market": "0x2528c92f1d66ef0fd3d7b21c1df78d885d3b64e9cab589897150d62660e1272f",
+  "asset_id": "54777936689729768557780483422139533051883788443743638328756257424627340606344",
+  "price": "0.999",
+  "size": "155.89",
+  "fee_rate_bps": "0",
+  "side": "SELL",
+  "timestamp": "1789896067029",
+  "event_type": "last_trade_price",
+  "transaction_hash": "0x7d8a094d415b034ea0a7358bd686727d76bad5b5b09a2808b57a90c856948c42"
+ },
+ {
+  "market": "0xefa17dee3af09f69f9ddf245b969aa4efbe7c71cdf06ee49d694408bc33e2ed2",
+  "asset_id": "33339798372916037220786136133406478491116150628220441951753426683441228279665",
+  "price": "0.002",
+  "size": "5",
+  "fee_rate_bps": "0",
+  "side": "BUY",
+  "timestamp": "1789896067811",
+  "event_type": "last_trade_price",
+  "transaction_hash": "0xe056e3b7e42b3cd01504ee990c90f3a5571c5e516b8949e4a9ae3dbca4792e89"
+ },
+ {
+  "market": "0xefa17dee3af09f69f9ddf245b969aa4efbe7c71cdf06ee49d694408bc33e2ed2",
+  "asset_id": "33339798372916037220786136133406478491116150628220441951753426683441228279665",
+  "price": "0.002",
+  "size": "5",
+  "fee_rate_bps": "0",
+  "side": "BUY",
+  "timestamp": "1789896068817",
+  "event_type": "last_trade_price",
+  "transaction_hash": "0x4ad2e75a8e68caac89c90bb757f611c17993ab9c3e5bd7a10fb8412d4c93cb98"
  }
 ]

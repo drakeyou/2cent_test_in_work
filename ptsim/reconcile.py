@@ -54,6 +54,8 @@ class Reconciler:
                 "asset": str(t.get("asset") or t.get("assetId") or ""),
                 "tick": tick, "size": size, "ts_ms": ts,
                 "side": str(t.get("side") or ""),
+                "tx_hash": str(t.get("transactionHash")
+                               or t.get("transaction_hash") or "").lower(),
             })
         return out
 
@@ -63,20 +65,31 @@ class Reconciler:
             return "no_data"
         tol = self.cfg.reconcile.match_tolerance_s * 1000
         entry_tick = self.cfg.entry.price_tick
+
+        # Точная сверка по хэшу транзакции: last_trade_price его отдаёт, и мы
+        # сохранили его в ленте окна. Допуск по времени нужен только там, где
+        # хэша нет — таймстемпы ленты блочные, секундной гранулярности.
+        ws_hashes = {
+            r["tx_hash"].lower() for r in self.store.query(
+                "SELECT tx_hash FROM paper_trades WHERE event_id = ? AND tx_hash <> ''",
+                (ev["event_id"],),
+            )
+        }
         matched = [
             t for t in trades
-            if t["asset"] == ev["asset_id"]
-            and t["tick"] <= entry_tick
-            and abs(t["ts_ms"] - ev["ts_ms"]) <= tol
+            if t["asset"] == ev["asset_id"] and t["tick"] <= entry_tick
+            and (t["tx_hash"] in ws_hashes if ws_hashes and t["tx_hash"]
+                 else abs(t["ts_ms"] - ev["ts_ms"]) <= tol)
         ]
         chain_size = sum(t["size"] for t in matched)
         verdict = "confirmed" if matched else "phantom_trade"
+        match_mode = "tx_hash" if ws_hashes else "timestamp"
         self.stats[verdict] += 1
         self.store.insert("reconcile_log", {
             "event_id": ev["event_id"], "checked_at": ms_to_iso(now_ms()),
             "verdict": verdict, "ws_size": ev["level_traded_size"],
             "chain_size": chain_size, "n_chain_trades": len(matched),
-            "detail": f"tol={tol}ms entry_tick={entry_tick}",
+            "detail": f"mode={match_mode} tol={tol}ms entry_tick={entry_tick}",
         })
         self.store.update("paper_events", {"event_id": ev["event_id"]}, {
             "trigger_confirmed": int(verdict == "confirmed"),

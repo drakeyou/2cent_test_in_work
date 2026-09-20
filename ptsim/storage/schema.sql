@@ -183,7 +183,9 @@ CREATE TABLE IF NOT EXISTS paper_trades (
   price             REAL,
   size              REAL,
   side_hit          TEXT,
-  source            TEXT
+  source            TEXT,
+  -- из last_trade_price; даёт точную сверку с лентой по хэшу
+  tx_hash           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ptrades_event ON paper_trades(event_id);
 
