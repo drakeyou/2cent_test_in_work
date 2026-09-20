@@ -243,12 +243,16 @@ class Engine:
         self.n_trades_seen += 1
         for c in st.tape.on_trade(trade):
             self._on_classification(st, c)
-        self._record_event_trade(st, trade)
         for ev in st.orders.on_trade(trade):
             self._on_fill(st, ev)
         # Та же сделка может исполнить наш аск по открытой позиции: тейкер,
         # покупающий вверх, снимает аски, а не биды.
         self.on_exit_trade(st, trade)
+        # Запись в ленту окна — ПОСЛЕ обработки филлов. Сделка, которая
+        # открывает событие, иначе не попала бы в его ленту вовсе: события на
+        # момент её записи ещё не существует. А это самая значимая сделка —
+        # именно её хэш нужен для точной сверки триггера с ончейн-лентой.
+        self._record_event_trade(st, trade)
 
     def _on_classification(self, st: AssetState, c: Classification) -> None:
         st.orders.on_classification(c)
