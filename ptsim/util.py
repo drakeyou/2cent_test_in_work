@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from typing import Any
@@ -71,10 +72,27 @@ def ms_from_any(value: Any, default: int | None = None) -> int:
     return iso_to_ms(s, default)
 
 
+_TZ_SHORT = re.compile(r"([+-]\d{2})$")
+
+
 def iso_to_ms(value: str | None, default: int | None = None) -> int | None:
+    """Разбор времени из Gamma.
+
+    Форматы в одном и том же ответе различаются, проверено на живом API:
+        endDate:       '2027-01-01T04:59:00Z'
+        gameStartTime: '2025-12-19 23:40:00+00'   <- пробел и усечённая зона
+
+    Второй вариант `datetime.fromisoformat` принимает только с Python 3.11, где
+    парсер ослаблен. На 3.10 он бросил бы исключение, функция вернула бы None,
+    и окно подписки тихо поехало бы на «время старта неизвестно» — ровно та
+    ошибка, из-за которой матчи не наблюдаются. Нормализуем явно.
+    """
     if not value:
         return default
     s = str(value).strip().replace("Z", "+00:00")
+    if " " in s and "T" not in s:
+        s = s.replace(" ", "T", 1)
+    s = _TZ_SHORT.sub(r"\1:00", s)
     try:
         from datetime import datetime
 

@@ -121,6 +121,12 @@ class Collector:
                 )
                 if self.ws.unknown_types:
                     log.warning("неизвестные типы сообщений: %s", self.ws.unknown_types)
+                if self.engine.dropped_no_asset or self.engine.dropped_unknown_asset:
+                    log.warning(
+                        "сообщений не разложено: без asset_id=%d, ассет не подписан=%d "
+                        "(если первое растёт — формат канала изменился)",
+                        self.engine.dropped_no_asset, self.engine.dropped_unknown_asset,
+                    )
             except Exception:
                 log.exception("цикл coverage упал")
 

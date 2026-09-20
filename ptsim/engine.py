@@ -82,6 +82,11 @@ class Engine:
         self.n_events = 0
         self.n_suppressed = 0
         self.unknown_classified = 0
+        # Счётчики неразложенных сообщений. Их отсутствие и было причиной, по
+        # которой неверная маршрутизация price_change не проявлялась никак:
+        # сообщения просто исчезали.
+        self.dropped_no_asset = 0
+        self.dropped_unknown_asset = 0
         self._hour_counters: dict[tuple[str, str], dict[str, float]] = {}
         # Заполняется менеджером WS: нужно, чтобы отнести разрыв шарда к тем
         # дисциплинам, которые он реально ослепил, а не ко всем сразу.
@@ -138,30 +143,91 @@ class Engine:
     # ------------------------------------------------------ WS-сообщения
 
     def on_ws_message(self, msg: dict) -> None:
-        aid = msg.get("asset_id") or msg.get("assetId")
-        st = self.assets.get(str(aid)) if aid else None
-        if st is None:
-            return
+        """Маршрутизация сообщения канала market.
+
+        Формы сообщений проверены на живом WS, и они НЕ такие, как кажется по
+        имени канала:
+
+          * `book` несёт `bids`/`asks` (не `buys`/`sells`) и свой `asset_id`;
+          * `price_change` **не имеет asset_id на уровне сообщения**. Он лежит
+            внутри каждого изменения, и одно сообщение штатно несёт изменения
+            по ДВУМ ассетам — обоим токенам рынка. На живом захвате таких
+            сообщений было 100%.
+
+        Наивная маршрутизация по `msg["asset_id"]` молча отбрасывает все
+        `price_change`: остаются только снапшоты, инкрементальных обновлений
+        нет, событий нет никогда. Поэтому изменения группируются по ассетам, а
+        всё, что не удалось разложить, ПОПАДАЕТ В СЧЁТЧИК и в лог — тихо
+        теряться сообщения больше не могут.
+        """
         et = msg.get("event_type") or msg.get("type")
         ts = ms_from_any(msg.get("timestamp"))
+        top_aid = msg.get("asset_id") or msg.get("assetId")
+
         if et == "book":
-            st.book.apply_snapshot(msg.get("buys") or msg.get("bids") or [],
-                                   msg.get("sells") or msg.get("asks") or [], ts)
+            st = self._route(top_aid)
+            if st is None:
+                return
+            st.book.apply_snapshot(
+                msg.get("bids") or msg.get("buys") or [],
+                msg.get("asks") or msg.get("sells") or [], ts,
+            )
             for c in st.tape.on_snapshot_reset(ts):
                 self._on_classification(st, c)
             st.orders.on_book_update(ts)
+            self._mark_observed(st, ts)
+
         elif et == "price_change":
-            changes = msg.get("changes") or msg.get("price_changes") or []
-            if isinstance(changes, dict):
-                changes = [changes]
-            deltas = st.book.apply_price_change(changes, ts)
-            if deltas:
-                for c in st.tape.on_deltas(deltas):
-                    self._on_classification(st, c)
-                st.orders.on_book_update(ts)
+            raw = msg.get("price_changes") or msg.get("changes") or []
+            if isinstance(raw, dict):
+                raw = [raw]
+            groups: dict[str, list[dict]] = {}
+            for ch in raw:
+                if not isinstance(ch, dict):
+                    continue
+                aid = ch.get("asset_id") or ch.get("assetId") or top_aid
+                if aid is None:
+                    self.dropped_no_asset += 1
+                    continue
+                groups.setdefault(str(aid), []).append(ch)
+            for aid, changes in groups.items():
+                st = self._route(aid)
+                if st is None:
+                    continue
+                deltas = st.book.apply_price_change(changes, ts)
+                if deltas:
+                    for c in st.tape.on_deltas(deltas):
+                        self._on_classification(st, c)
+                    st.orders.on_book_update(ts)
+                self._mark_observed(st, ts)
+
         elif et == "last_trade_price":
-            self._on_trade_msg(st, msg, ts)
-        self._mark_observed(st, ts)
+            entries = msg.get("last_trade_prices") or msg.get("trades")
+            if isinstance(entries, dict):
+                entries = [entries]
+            if not entries:
+                entries = [msg]
+            for e in entries:
+                if not isinstance(e, dict):
+                    continue
+                aid = e.get("asset_id") or e.get("assetId") or top_aid
+                if aid is None:
+                    self.dropped_no_asset += 1
+                    continue
+                st = self._route(aid)
+                if st is None:
+                    continue
+                self._on_trade_msg(st, e, ms_from_any(e.get("timestamp"), ts))
+                self._mark_observed(st, ts)
+
+    def _route(self, asset_id) -> "AssetState | None":
+        if asset_id is None:
+            self.dropped_no_asset += 1
+            return None
+        st = self.assets.get(str(asset_id))
+        if st is None:
+            self.dropped_unknown_asset += 1
+        return st
 
     def _on_trade_msg(self, st: AssetState, msg: dict, ts: int) -> None:
         tick = to_tick(msg.get("price"))
